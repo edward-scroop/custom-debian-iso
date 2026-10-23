@@ -1,15 +1,11 @@
 use clap::Parser;
 use std::{
-    fs, io,
+    fs::{self, OpenOptions},
+    io::{self, Write},
     path::{Path, PathBuf},
     process::{Command, ExitCode},
 };
 use toml::{Table, Value};
-
-#[derive(Debug)]
-pub struct Config {
-    template: Box<str>,
-}
 
 enum CheckType {
     File,
@@ -243,8 +239,7 @@ fn main() -> ExitCode {
         return ExitCode::FAILURE;
     }
 
-    let mut command = Command::new("xorriso");
-    command
+    let command_result = Command::new("xorriso")
         .arg("-osirrox")
         .arg("on")
         .arg("-indev")
@@ -256,9 +251,10 @@ fn main() -> ExitCode {
         .arg("-extract")
         .arg("/")
         .arg(&temp_dir)
-        .arg("-rollback_end");
+        .arg("-rollback_end")
+        .output();
 
-    match command.output() {
+    match command_result {
         Ok(output) => {
             if !output.status.success() {
                 let stderr = str::from_utf8(&output.stderr)
@@ -275,11 +271,122 @@ fn main() -> ExitCode {
         }
     };
 
+    // enable bios booting
+    let command_result = Command::new("sed")
+        .arg("-i")
+        .arg("s/append/append auto=true priority=critical file=\\/cdrom\\/preseed.cfg/g")
+        .arg(temp_dir.join("isolinux/txt.cfg"))
+        .output();
+
+    match command_result {
+        Ok(output) => {
+            if !output.status.success() {
+                let stderr = str::from_utf8(&output.stderr)
+                    .expect("stderr should be utf8.")
+                    .to_string();
+
+                eprintln!("error running sed: {stderr}");
+                return ExitCode::FAILURE;
+            }
+        }
+        Err(e) => {
+            eprintln!("error running sed: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let command_result = Command::new("sed")
+        .arg("-i")
+        .arg("s/timeout 0/timeout 50/g")
+        .arg(temp_dir.join("isolinux/isolinux.cfg"))
+        .output();
+
+    match command_result {
+        Ok(output) => {
+            if !output.status.success() {
+                let stderr = str::from_utf8(&output.stderr)
+                    .expect("stderr should be utf8.")
+                    .to_string();
+
+                eprintln!("error running sed: {stderr}");
+                return ExitCode::FAILURE;
+            }
+        }
+        Err(e) => {
+            eprintln!("error running sed: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let command_result = Command::new("sed")
+        .arg("-i")
+        .arg("s/default vesamenu.c32/default install/g")
+        .arg(temp_dir.join("isolinux/isolinux.cfg"))
+        .output();
+
+    match command_result {
+        Ok(output) => {
+            if !output.status.success() {
+                let stderr = str::from_utf8(&output.stderr)
+                    .expect("stderr should be utf8.")
+                    .to_string();
+
+                eprintln!("error running sed: {stderr}");
+                return ExitCode::FAILURE;
+            }
+        }
+        Err(e) => {
+            eprintln!("error running sed: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    // enable uefi booting
+    let grub_cfg_path = temp_dir.join("boot/grub/grub.cfg");
+    let command_result = Command::new("sed")
+        .arg("-i")
+        .arg("s/---/auto=true priority=critical preseed\\/file=\\/cdrom\\/preseed.cfg ---/g")
+        .arg(&grub_cfg_path)
+        .output();
+
+    match command_result {
+        Ok(output) => {
+            if !output.status.success() {
+                let stderr = str::from_utf8(&output.stderr)
+                    .expect("stderr should be utf8.")
+                    .to_string();
+
+                eprintln!("error running sed: {stderr}");
+                return ExitCode::FAILURE;
+            }
+        }
+        Err(e) => {
+            eprintln!("error running sed: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let mut file = match OpenOptions::new().append(true).open(&grub_cfg_path) {
+        Ok(x) => x,
+        Err(e) => {
+            eprintln!("error loading grub config file: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    if let Err(e) = writeln!(
+        file,
+        "set default=1\n\
+        set timeout=5"
+    ) {
+        eprintln!("error writing to grub config file: {e}");
+        return ExitCode::FAILURE;
+    }
+
     let mut output_path = output_dir.join(custom_iso_name);
     output_path.add_extension("iso");
 
-    command = Command::new("xorriso");
-    command
+    let command_result = Command::new("xorriso")
         .arg("-as")
         .arg("mkisofs")
         .arg("-r")
@@ -302,9 +409,10 @@ fn main() -> ExitCode {
         .arg("boot/grub/efi.img")
         .arg("-no-emul-boot")
         .arg("-isohybrid-gpt-basdat")
-        .arg(&temp_dir);
+        .arg(&temp_dir)
+        .output();
 
-    match command.output() {
+    match command_result {
         Ok(output) => {
             if !output.status.success() {
                 let stderr = str::from_utf8(&output.stderr)
@@ -325,5 +433,6 @@ fn main() -> ExitCode {
         eprintln!("error deleting temp directory: {e}");
         return ExitCode::FAILURE;
     };
+
     return ExitCode::SUCCESS;
 }
