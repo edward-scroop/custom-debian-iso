@@ -9,7 +9,7 @@ edition = "2024"
 rust-version = "1.94.1"
 
 [[bin]]
-name = "create-iso"
+name = "create-custom-iso"
 path = "src/main.rs"
 
 [profile.dev]
@@ -47,10 +47,7 @@ jiff = {
         "serde"
     ]
 }
-toml = {
-    version = "=1.1.6",
-    features = ["preserve_order"]
-}
+toml = "=1.1.6"
 serde = {
     version = "=1.0.229",
     features = [
@@ -59,6 +56,12 @@ serde = {
     ]
 }
 serde_json = "=1.0.151"
+clap = {
+    version = "=4.6.7",
+    features = [
+        "derive"
+    ]
+}
 
 [lints.rust]
 warnings = { level = "warn", priority = -1 }
@@ -67,8 +70,8 @@ future_incompatible = { level = "warn", priority = -1 }
 keyword_idents = { level = "warn", priority = -1 }
 let_underscore = { level = "warn", priority = -1 }
 nonstandard_style = { level = "warn", priority = -1 }
-refining-impl-trait = { level = "warn", priority = -1 }
-unknown-or-malformed-diagnostic-attributes = { level = "warn", priority = -1 } 
+refining_impl_trait = { level = "warn", priority = -1 }
+unknown_or_malformed_diagnostic_attributes = { level = "warn", priority = -1 } 
 unused = { level = "warn", priority = -1 } 
 
 # Forbid until last resort
