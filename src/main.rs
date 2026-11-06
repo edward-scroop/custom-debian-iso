@@ -1,6 +1,6 @@
 use clap::Parser;
 use std::{
-    fs::{self, OpenOptions},
+    fs::{self, File, OpenOptions},
     io::{self, Write},
     path::{Path, PathBuf},
     process::{Command, ExitCode},
@@ -226,6 +226,297 @@ fn main() -> ExitCode {
         }
     };
 
+    let mut preseed_toml: Table = match template_toml.get("preseed") {
+        Some(x) => match x.as_table() {
+            Some(table) => {
+                for (key, value) in table.iter() {
+                    if !value.is_str() {
+                        eprintln!(
+                            "error template preseed value {key} in {}: is not a string",
+                            template_file.to_string_lossy()
+                        );
+                        return ExitCode::FAILURE;
+                    }
+                }
+
+                table.clone()
+            }
+            None => {
+                eprintln!(
+                    "error getting preseed values from template {}: is not a table",
+                    template_file.to_string_lossy()
+                );
+                return ExitCode::FAILURE;
+            }
+        },
+        None => Table::new(),
+    };
+    match config_toml.get("preseed") {
+        Some(x) => match x.as_table().cloned() {
+            Some(table) => {
+                for (key, value) in table.iter() {
+                    if !value.is_str() {
+                        eprintln!(
+                            "error config preseed value {key} in {}: is not a string",
+                            config_file.to_string_lossy()
+                        );
+                        return ExitCode::FAILURE;
+                    }
+                }
+
+                preseed_toml.extend(table)
+            }
+            None => {
+                eprintln!(
+                    "error getting preseed values from config {}: is not a table",
+                    config_file.to_string_lossy()
+                );
+                return ExitCode::FAILURE;
+            }
+        },
+        None => (),
+    }
+
+    let mut template_missing_config_script = false;
+    let mut config_script = match template_toml.get("config") {
+        Some(config) => {
+            let Some(table) = config.as_table() else {
+                eprintln!(
+                    "error getting config script values from template {}: is not a table",
+                    template_file.to_string_lossy()
+                );
+                return ExitCode::FAILURE;
+            };
+
+            if let Some(script) = table.get("script-file") {
+                let Some(script_path) = script.as_str() else {
+                    eprintln!(
+                        "error getting config script file from template {}: script-file is not a string",
+                        template_file.to_string_lossy()
+                    );
+                    return ExitCode::FAILURE;
+                };
+
+                let script_path =
+                    scripts_dir.join(script_path.strip_prefix("/").unwrap_or(script_path));
+                match fs::read_to_string(&script_path) {
+                    Ok(x) => x,
+                    Err(e) => {
+                        eprintln!(
+                            "error loading config script: {e} {}",
+                            &script_path.to_string_lossy()
+                        );
+                        return ExitCode::FAILURE;
+                    }
+                }
+            } else if let Some(script) = table.get("script") {
+                let Some(script_value) = script.as_str() else {
+                    eprintln!(
+                        "error getting config script from template {}: script is not a string",
+                        template_file.to_string_lossy()
+                    );
+                    return ExitCode::FAILURE;
+                };
+
+                script_value.into()
+            } else {
+                template_missing_config_script = true;
+                String::new()
+            }
+        }
+        None => {
+            template_missing_config_script = true;
+            String::new()
+        }
+    };
+    match config_toml.get("config") {
+        Some(config) => {
+            let Some(table) = config.as_table() else {
+                eprintln!(
+                    "error getting config script values from config {}: is not a table",
+                    config_file.to_string_lossy()
+                );
+                return ExitCode::FAILURE;
+            };
+
+            if let Some(script) = table.get("script-file") {
+                let Some(script_path) = script.as_str() else {
+                    eprintln!(
+                        "error getting config script file from config {}: script-file is not a string",
+                        config_file.to_string_lossy()
+                    );
+                    return ExitCode::FAILURE;
+                };
+
+                let script_path =
+                    scripts_dir.join(script_path.strip_prefix("/").unwrap_or(script_path));
+                match fs::read_to_string(&script_path) {
+                    Ok(x) => {
+                        if !template_missing_config_script {
+                            config_script.push_str("\n\n");
+                        };
+                        config_script.push_str(&x)
+                    }
+                    Err(e) => {
+                        eprintln!(
+                            "error loading config script: {e} {}",
+                            &script_path.to_string_lossy()
+                        );
+                        return ExitCode::FAILURE;
+                    }
+                };
+            } else if let Some(script) = table.get("script") {
+                let Some(script_value) = script.as_str() else {
+                    eprintln!(
+                        "error getting config script from config {}: script is not a string",
+                        config_file.to_string_lossy()
+                    );
+                    return ExitCode::FAILURE;
+                };
+
+                if !template_missing_config_script {
+                    config_script.push_str("\n\n");
+                };
+                config_script.push_str(script_value);
+            } else {
+                if template_missing_config_script {
+                    eprintln!(
+                        "error missing config script values from config and template. Set config script values in atleast one"
+                    );
+                    return ExitCode::FAILURE;
+                }
+            }
+        }
+        None => {
+            if template_missing_config_script {
+                eprintln!(
+                    "error missing config script values from config and template. Set config script values in atleast one"
+                );
+                return ExitCode::FAILURE;
+            }
+        }
+    };
+
+    let mut template_missing_install_script = false;
+    let mut install_script = match template_toml.get("install") {
+        Some(install) => {
+            let Some(table) = install.as_table() else {
+                eprintln!(
+                    "error getting install script values from template {}: is not a table",
+                    template_file.to_string_lossy()
+                );
+                return ExitCode::FAILURE;
+            };
+
+            if let Some(script) = table.get("script-file") {
+                let Some(script_path) = script.as_str() else {
+                    eprintln!(
+                        "error getting install script file from template {}: script-file is not a string",
+                        template_file.to_string_lossy()
+                    );
+                    return ExitCode::FAILURE;
+                };
+
+                let script_path =
+                    scripts_dir.join(script_path.strip_prefix("/").unwrap_or(script_path));
+                match fs::read_to_string(&script_path) {
+                    Ok(x) => x,
+                    Err(e) => {
+                        eprintln!(
+                            "error loading install script: {e} {}",
+                            &script_path.to_string_lossy()
+                        );
+                        return ExitCode::FAILURE;
+                    }
+                }
+            } else if let Some(script) = table.get("script") {
+                let Some(script_value) = script.as_str() else {
+                    eprintln!(
+                        "error getting install script from template {}: script is not a string",
+                        template_file.to_string_lossy()
+                    );
+                    return ExitCode::FAILURE;
+                };
+
+                script_value.into()
+            } else {
+                template_missing_install_script = true;
+                String::new()
+            }
+        }
+        None => {
+            template_missing_install_script = true;
+            String::new()
+        }
+    };
+    match config_toml.get("install") {
+        Some(install) => {
+            let Some(table) = install.as_table() else {
+                eprintln!(
+                    "error getting install script values from config {}: is not a table",
+                    config_file.to_string_lossy()
+                );
+                return ExitCode::FAILURE;
+            };
+
+            if let Some(script) = table.get("script-file") {
+                let Some(script_path) = script.as_str() else {
+                    eprintln!(
+                        "error getting install script file from config {}: script-file is not a string",
+                        config_file.to_string_lossy()
+                    );
+                    return ExitCode::FAILURE;
+                };
+
+                let script_path =
+                    scripts_dir.join(script_path.strip_prefix("/").unwrap_or(script_path));
+                match fs::read_to_string(&script_path) {
+                    Ok(x) => {
+                        if !template_missing_install_script {
+                            install_script.push_str("\n\n");
+                        };
+                        install_script.push_str(&x)
+                    }
+                    Err(e) => {
+                        eprintln!(
+                            "error loading install script: {e} {}",
+                            &script_path.to_string_lossy()
+                        );
+                        return ExitCode::FAILURE;
+                    }
+                };
+            } else if let Some(script) = table.get("script") {
+                let Some(script_value) = script.as_str() else {
+                    eprintln!(
+                        "error getting install script from config {}: script is not a string",
+                        config_file.to_string_lossy()
+                    );
+                    return ExitCode::FAILURE;
+                };
+
+                if !template_missing_install_script {
+                    install_script.push_str("\n\n");
+                };
+                install_script.push_str(script_value);
+            } else {
+                if template_missing_install_script {
+                    eprintln!(
+                        "error missing install script values from config and template. Set install script values in atleast one"
+                    );
+                    return ExitCode::FAILURE;
+                }
+            }
+        }
+        None => {
+            if template_missing_install_script {
+                eprintln!(
+                    "error missing install script values from config and template. Set install script values in atleast one"
+                );
+                return ExitCode::FAILURE;
+            }
+        }
+    };
+
     let iso_path = match toml_get_string("iso", &mut template_toml) {
         Ok(x) => x,
         Err(e) => {
@@ -269,6 +560,170 @@ fn main() -> ExitCode {
             eprintln!("error extracting iso: {e}");
             return ExitCode::FAILURE;
         }
+    };
+
+    let preseed_file_path = temp_dir.join("preseed.cfg");
+    let mut preseed_file = match File::create_new(&preseed_file_path) {
+        Ok(x) => x,
+        Err(e) => {
+            eprintln!(
+                "error creating preseed file: {e} {}",
+                preseed_file_path.to_string_lossy()
+            );
+            return ExitCode::FAILURE;
+        }
+    };
+
+    if let Err(e) = writeln!(preseed_file, "#_preseed_V1") {
+        eprintln!(
+            "error writing to preseed file: {e} {}",
+            preseed_file_path.to_string_lossy()
+        );
+        return ExitCode::FAILURE;
+    };
+
+    let late_command_key = "d-i preseed/late_command string";
+    let mut late_command_value = String::from(
+        "\
+            cp /cdrom/config.sh /target/bin; \
+            cp /cdrom/install.sh /target/bin; \
+            cp /cdrom/install.service /target/etc/systemd/system; \
+            cp /cdrom/install.timer /target/etc/systemd/system; \
+            in-target chmod +x /bin/config.sh; \
+            in-target chmod +x /bin/install.sh; \
+            in-target /bin/config.sh; \
+            in-target systemctl enable install.timer; \
+        ",
+    );
+    if let Some(value) = preseed_toml.remove(late_command_key) {
+        late_command_value.push_str("\n\n");
+        late_command_value.push_str(
+            value
+                .as_str()
+                .expect("table should have been checked to be only strings"),
+        );
+    };
+    preseed_toml.insert(late_command_key.into(), Value::String(late_command_value));
+
+    for (key, value) in preseed_toml.iter() {
+        if let Err(e) = writeln!(
+            preseed_file,
+            "{key} {}",
+            value
+                .as_str()
+                .expect("table should have been checked to be only strings")
+        ) {
+            eprintln!(
+                "error writing to preseed file: {e} {}",
+                preseed_file_path.to_string_lossy()
+            );
+            return ExitCode::FAILURE;
+        };
+    }
+
+    let config_script_path = temp_dir.join("config.sh");
+    let mut config_script_file = match File::create_new(&config_script_path) {
+        Ok(x) => x,
+        Err(e) => {
+            eprintln!(
+                "error creating config script: {e} {}",
+                config_script_path.to_string_lossy()
+            );
+            return ExitCode::FAILURE;
+        }
+    };
+    if let Err(e) = write!(config_script_file, "{config_script}") {
+        eprintln!(
+            "error writing to config script: {e} {}",
+            config_script_path.to_string_lossy()
+        );
+        return ExitCode::FAILURE;
+    };
+
+    let install_script_path = temp_dir.join("install.sh");
+    let mut install_script_file = match File::create_new(&install_script_path) {
+        Ok(x) => x,
+        Err(e) => {
+            eprintln!(
+                "error creating install script: {e} {}",
+                install_script_path.to_string_lossy()
+            );
+            return ExitCode::FAILURE;
+        }
+    };
+    if let Err(e) = write!(install_script_file, "{install_script}") {
+        eprintln!(
+            "error writing to install script: {e} {}",
+            install_script_path.to_string_lossy()
+        );
+        return ExitCode::FAILURE;
+    };
+
+    let install_service_literal = concat!(
+        "[Unit]\n",
+        "Description=Install script\n",
+        "Requires=network-online.target\n",
+        "After=network-online.target\n",
+        "\n",
+        "[Service]\n",
+        "Type=oneshot\n",
+        "ExecStart=/bin/install.sh\n",
+        "StandardOutput=append:/var/log/install.log\n",
+        "StandardError=append:/var/log/install.log\n",
+        "User=root\n",
+        "Group=root\n",
+        "Environment=TERM=linux\n",
+        "\n",
+        "[Install]\n",
+        "WantedBy=multi-user.target\n",
+    );
+    let install_service_path = temp_dir.join("install.service");
+    let mut install_service_file = match File::create_new(&install_service_path) {
+        Ok(x) => x,
+        Err(e) => {
+            eprintln!(
+                "error creating install service file: {e} {}",
+                install_service_path.to_string_lossy()
+            );
+            return ExitCode::FAILURE;
+        }
+    };
+    if let Err(e) = write!(install_service_file, "{install_service_literal}") {
+        eprintln!(
+            "error writing to install service file: {e} {}",
+            install_service_path.to_string_lossy()
+        );
+        return ExitCode::FAILURE;
+    };
+
+    let install_timer_literal = concat!(
+        "[Unit]\n",
+        "Description=Runs install script after boot\n",
+        "\n",
+        "[Timer]\n",
+        "OnBootSec=1m\n",
+        "Unit=install.service\n",
+        "\n",
+        "[Install]\n",
+        "WantedBy=multi-user.target\n",
+    );
+    let install_timer_path = temp_dir.join("install.timer");
+    let mut install_timer_file = match File::create_new(&install_timer_path) {
+        Ok(x) => x,
+        Err(e) => {
+            eprintln!(
+                "error creating install timer file: {e} {}",
+                install_timer_path.to_string_lossy()
+            );
+            return ExitCode::FAILURE;
+        }
+    };
+    if let Err(e) = write!(install_timer_file, "{install_timer_literal}") {
+        eprintln!(
+            "error writing to install timer file: {e} {}",
+            install_timer_path.to_string_lossy()
+        );
+        return ExitCode::FAILURE;
     };
 
     // enable bios booting
