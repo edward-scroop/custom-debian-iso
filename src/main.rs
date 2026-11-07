@@ -5,7 +5,7 @@ use std::{
     path::{Path, PathBuf},
     process::{Command, ExitCode},
 };
-use toml::{Table, Value};
+use toml::{Table, Value, value::Array};
 
 enum CheckType {
     File,
@@ -126,18 +126,20 @@ fn main() -> ExitCode {
         }
     };
 
+    let output_dir = work_dir.join("output");
+    let temp_dir = work_dir.join(".tmp");
     let isos_dir = work_dir.join("isos");
     let scripts_dir = work_dir.join("scripts");
     let templates_dir = work_dir.join("templates");
     let files_dir = work_dir.join("files");
-    let temp_dir = work_dir.join(".tmp");
-    let output_dir = work_dir.join("output");
     let custom_dir = work_dir.join(args.custom_dir);
     let custom_iso_name = custom_dir
         .file_name()
         .expect("custom dir should a directory")
         .to_string_lossy()
         .to_string();
+    let custom_scripts_dir = custom_dir.join("scripts");
+    let custom_files_dir = custom_dir.join("files");
 
     for dir in [
         &work_dir,
@@ -146,6 +148,8 @@ fn main() -> ExitCode {
         &templates_dir,
         &files_dir,
         &custom_dir,
+        &custom_scripts_dir,
+        &custom_files_dir,
     ] {
         if let Err(e) = check_if_dir_exists(dir) {
             eprintln!("{e}");
@@ -397,7 +401,7 @@ fn main() -> ExitCode {
         }
     };
 
-    let mut template_missing_install_script = false;
+    let mut template_missing_install_script = true;
     let mut install_script = match template_toml.get("install") {
         Some(install) => {
             let Some(table) = install.as_table() else {
@@ -405,6 +409,7 @@ fn main() -> ExitCode {
                     "error getting install script values from template {}: is not a table",
                     template_file.to_string_lossy()
                 );
+
                 return ExitCode::FAILURE;
             };
 
@@ -414,18 +419,23 @@ fn main() -> ExitCode {
                         "error getting install script file from template {}: script-file is not a string",
                         template_file.to_string_lossy()
                     );
+
                     return ExitCode::FAILURE;
                 };
 
                 let script_path =
                     scripts_dir.join(script_path.strip_prefix("/").unwrap_or(script_path));
                 match fs::read_to_string(&script_path) {
-                    Ok(x) => x,
+                    Ok(x) => {
+                        template_missing_install_script = false;
+                        x
+                    }
                     Err(e) => {
                         eprintln!(
                             "error loading install script: {e} {}",
                             &script_path.to_string_lossy()
                         );
+
                         return ExitCode::FAILURE;
                     }
                 }
@@ -435,19 +445,17 @@ fn main() -> ExitCode {
                         "error getting install script from template {}: script is not a string",
                         template_file.to_string_lossy()
                     );
+
                     return ExitCode::FAILURE;
                 };
+                template_missing_install_script = false;
 
                 script_value.into()
             } else {
-                template_missing_install_script = true;
                 String::new()
             }
         }
-        None => {
-            template_missing_install_script = true;
-            String::new()
-        }
+        None => String::new(),
     };
     match config_toml.get("install") {
         Some(install) => {
@@ -456,6 +464,7 @@ fn main() -> ExitCode {
                     "error getting install script values from config {}: is not a table",
                     config_file.to_string_lossy()
                 );
+
                 return ExitCode::FAILURE;
             };
 
@@ -465,6 +474,7 @@ fn main() -> ExitCode {
                         "error getting install script file from config {}: script-file is not a string",
                         config_file.to_string_lossy()
                     );
+
                     return ExitCode::FAILURE;
                 };
 
@@ -482,6 +492,7 @@ fn main() -> ExitCode {
                             "error loading install script: {e} {}",
                             &script_path.to_string_lossy()
                         );
+
                         return ExitCode::FAILURE;
                     }
                 };
@@ -491,6 +502,7 @@ fn main() -> ExitCode {
                         "error getting install script from config {}: script is not a string",
                         config_file.to_string_lossy()
                     );
+
                     return ExitCode::FAILURE;
                 };
 
@@ -503,6 +515,7 @@ fn main() -> ExitCode {
                     eprintln!(
                         "error missing install script values from config and template. Set install script values in atleast one"
                     );
+
                     return ExitCode::FAILURE;
                 }
             }
@@ -512,9 +525,158 @@ fn main() -> ExitCode {
                 eprintln!(
                     "error missing install script values from config and template. Set install script values in atleast one"
                 );
+
                 return ExitCode::FAILURE;
             }
         }
+    };
+
+    let files_toml: Array = match template_toml.get("files") {
+        Some(files) => {
+            let Some(array) = files.as_array() else {
+                eprintln!(
+                    "error getting files array from template {}: is not an array",
+                    template_file.to_string_lossy()
+                );
+
+                return ExitCode::FAILURE;
+            };
+
+            for element in array {
+                let Some(table) = element.as_table() else {
+                    eprintln!(
+                        "error getting files table from template {}: {}: is not a table is a {}",
+                        template_file.to_string_lossy(),
+                        element.to_string(),
+                        element.type_str()
+                    );
+
+                    return ExitCode::FAILURE;
+                };
+
+                if let None = table.get("source") {
+                    eprintln!(
+                        "error getting files table from template {}: source is missing from: {}",
+                        template_file.to_string_lossy(),
+                        element.to_string()
+                    );
+
+                    return ExitCode::FAILURE;
+                };
+                if let None = table.get("iso_path") {
+                    eprintln!(
+                        "error getting files table from template {}: iso_path is missing from: {}",
+                        template_file.to_string_lossy(),
+                        element.to_string()
+                    );
+
+                    return ExitCode::FAILURE;
+                };
+                if let None = table.get("install_path") {
+                    eprintln!(
+                        "error getting files table from template {}: install_path is missing from: {}",
+                        template_file.to_string_lossy(),
+                        element.to_string()
+                    );
+
+                    return ExitCode::FAILURE;
+                };
+            }
+
+            array.clone()
+        }
+        None => Array::new(),
+    };
+    let custom_files_toml: Array = match config_toml.get_mut("files") {
+        Some(files) => {
+            let Some(array) = files.as_array_mut() else {
+                eprintln!(
+                    "error getting files array from config {}: is not an array",
+                    template_file.to_string_lossy()
+                );
+
+                return ExitCode::FAILURE;
+            };
+
+            for element in array.iter_mut() {
+                let Some(table) = element.as_table_mut() else {
+                    eprintln!(
+                        "error getting files table from config {}: {}: is not a table is a {}",
+                        template_file.to_string_lossy(),
+                        element.to_string(),
+                        element.type_str()
+                    );
+
+                    return ExitCode::FAILURE;
+                };
+
+                if let Some(source) = table.get_mut("source") {
+                    let Some(source_str) = source.as_str() else {
+                        eprintln!(
+                            "error getting files table from template {}: source is not a string: {}",
+                            template_file.to_string_lossy(),
+                            element.to_string()
+                        );
+
+                        return ExitCode::FAILURE;
+                    };
+
+                    let source_path =
+                        custom_files_dir.join(source_str.strip_prefix("/").unwrap_or(source_str));
+
+                    *source = Value::String(source_path.to_string_lossy().to_string());
+                } else {
+                    eprintln!(
+                        "error getting files table from template {}: source is missing from: {}",
+                        template_file.to_string_lossy(),
+                        element.to_string()
+                    );
+
+                    return ExitCode::FAILURE;
+                };
+                if let Some(iso_path) = table.get("iso_path") {
+                    if !iso_path.is_str() {
+                        eprintln!(
+                            "error getting files table from template {}: iso_path is not a string: {}",
+                            template_file.to_string_lossy(),
+                            element.to_string()
+                        );
+
+                        return ExitCode::FAILURE;
+                    };
+                } else {
+                    eprintln!(
+                        "error getting files table from template {}: iso_path is missing from: {}",
+                        template_file.to_string_lossy(),
+                        element.to_string()
+                    );
+
+                    return ExitCode::FAILURE;
+                };
+                if let Some(iso_path) = table.get("install_path") {
+                    if !iso_path.is_str() {
+                        eprintln!(
+                            "error getting files table from template {}: install_path is not a string: {}",
+                            template_file.to_string_lossy(),
+                            element.to_string()
+                        );
+
+                        return ExitCode::FAILURE;
+                    };
+                } else {
+                    eprintln!(
+                        "error getting files table from template {}: install_path is missing from: {}",
+                        template_file.to_string_lossy(),
+                        element.to_string()
+                    );
+
+                    return ExitCode::FAILURE;
+                };
+            }
+
+            array.clone()
+        }
+        None => Array::new(),
     };
 
     let iso_path = match toml_get_string("iso", &mut template_toml) {
@@ -528,7 +690,7 @@ fn main() -> ExitCode {
     if let Err(e) = check_if_file_exists(&iso_file) {
         eprintln!("error checking for iso file: {e}");
         return ExitCode::FAILURE;
-    }
+    };
 
     let command_result = Command::new("xorriso")
         .arg("-osirrox")
@@ -583,18 +745,17 @@ fn main() -> ExitCode {
     };
 
     let late_command_key = "d-i preseed/late_command string";
-    let mut late_command_value = String::from(
-        "\
-            cp /cdrom/config.sh /target/bin; \
-            cp /cdrom/install.sh /target/bin; \
-            cp /cdrom/install.service /target/etc/systemd/system; \
-            cp /cdrom/install.timer /target/etc/systemd/system; \
-            in-target chmod +x /bin/config.sh; \
-            in-target chmod +x /bin/install.sh; \
-            in-target /bin/config.sh; \
-            in-target systemctl enable install.timer; \
-        ",
-    );
+    let mut late_command_value = String::from(concat!(
+        "cp /cdrom/config.sh /target/bin; ",
+        "cp /cdrom/install.sh /target/bin; ",
+        "cp /cdrom/install.service /target/etc/systemd/system; ",
+        "cp /cdrom/install.timer /target/etc/systemd/system; ",
+        "in-target chmod +x /bin/config.sh; ",
+        "in-target chmod +x /bin/install.sh; ",
+        "in-target /bin/config.sh; ",
+        "in-target systemctl enable install.timer; ",
+    ));
+
     if let Some(value) = preseed_toml.remove(late_command_key) {
         late_command_value.push_str("\n\n");
         late_command_value.push_str(
@@ -603,6 +764,56 @@ fn main() -> ExitCode {
                 .expect("table should have been checked to be only strings"),
         );
     };
+
+    for file_table in files_toml.iter().chain(custom_files_toml.iter()) {
+        let table = file_table
+            .as_table()
+            .expect("files array should be comprised of tables");
+
+        let source = table
+            .get("source")
+            .expect("file table should have checked source existence")
+            .as_str()
+            .expect("files table should have been checked to be string");
+        let file_name = source
+            .split("/")
+            .last()
+            .expect("splitting a string will always return an iterator with content");
+        let iso_path = table
+            .get("iso_path")
+            .expect("file table should have checked iso_path existence")
+            .as_str()
+            .expect("files table should have been checked to be string");
+        let temp_iso_path_dir = temp_dir.join(iso_path.strip_prefix("/").unwrap_or(iso_path));
+        let temp_iso_path = temp_iso_path_dir.join(file_name);
+        let install_path = table
+            .get("install_path")
+            .expect("file table should have checked install_path existence")
+            .as_str()
+            .expect("files table should have been checked to be string");
+
+        if let Err(e) = fs::create_dir_all(&temp_iso_path_dir) {
+            eprintln!(
+                "error creating directories on iso temp: {source} to: {} {e}",
+                temp_iso_path_dir.to_string_lossy().to_string()
+            );
+
+            return ExitCode::FAILURE;
+        }
+
+        if let Err(e) = fs::copy(source, &temp_iso_path) {
+            eprintln!(
+                "error copying file: {source} to: {} {e}",
+                temp_iso_path.to_string_lossy().to_string()
+            );
+
+            return ExitCode::FAILURE;
+        }
+
+        late_command_value
+            .push_str(format!("cp /cdrom/{iso_path}/{file_name} /target/{install_path}").as_str());
+    }
+
     preseed_toml.insert(late_command_key.into(), Value::String(late_command_value));
 
     for (key, value) in preseed_toml.iter() {
@@ -617,6 +828,7 @@ fn main() -> ExitCode {
                 "error writing to preseed file: {e} {}",
                 preseed_file_path.to_string_lossy()
             );
+
             return ExitCode::FAILURE;
         };
     }
@@ -629,6 +841,7 @@ fn main() -> ExitCode {
                 "error creating config script: {e} {}",
                 config_script_path.to_string_lossy()
             );
+
             return ExitCode::FAILURE;
         }
     };
@@ -637,6 +850,7 @@ fn main() -> ExitCode {
             "error writing to config script: {e} {}",
             config_script_path.to_string_lossy()
         );
+
         return ExitCode::FAILURE;
     };
 
@@ -648,6 +862,7 @@ fn main() -> ExitCode {
                 "error creating install script: {e} {}",
                 install_script_path.to_string_lossy()
             );
+
             return ExitCode::FAILURE;
         }
     };
@@ -656,6 +871,7 @@ fn main() -> ExitCode {
             "error writing to install script: {e} {}",
             install_script_path.to_string_lossy()
         );
+
         return ExitCode::FAILURE;
     };
 
@@ -685,6 +901,7 @@ fn main() -> ExitCode {
                 "error creating install service file: {e} {}",
                 install_service_path.to_string_lossy()
             );
+
             return ExitCode::FAILURE;
         }
     };
@@ -693,6 +910,7 @@ fn main() -> ExitCode {
             "error writing to install service file: {e} {}",
             install_service_path.to_string_lossy()
         );
+
         return ExitCode::FAILURE;
     };
 
