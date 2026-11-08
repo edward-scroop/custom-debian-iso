@@ -67,6 +67,7 @@ clap = {
         "derive"
     ]
 }
+minijinja = "=3.0.5"
 
 [lints.rust]
 warnings = { level = "warn", priority = -1 }
@@ -92,7 +93,7 @@ cargo = { level = "warn", priority = -1 }
 pedantic = { level = "warn", priority = -1 }
  
 # Restriction
-unwrap_used = "forbid"
+unwrap_used = "deny"
 
 # Pedantic
 too_many_lines = "allow"
