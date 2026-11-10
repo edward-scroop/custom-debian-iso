@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2026 Edward Scroop <edward.scroop@gmail.com>
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 use clap::Parser;
 use minijinja::context;
 use std::{
