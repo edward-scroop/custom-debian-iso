@@ -547,9 +547,9 @@ fn main() -> ExitCode {
         return ExitCode::FAILURE;
     };
 
-    let files_toml: Array = match template_toml.get("files") {
+    let files_toml: Array = match template_toml.get_mut("files") {
         Some(files) => {
-            let Some(array) = files.as_array() else {
+            let Some(array) = files.as_array_mut() else {
                 eprintln!(
                     "error getting files array from template {}: is not an array",
                     template_file.to_string_lossy()
@@ -558,8 +558,8 @@ fn main() -> ExitCode {
                 return ExitCode::FAILURE;
             };
 
-            for element in array {
-                let Some(table) = element.as_table() else {
+            for element in array.iter_mut() {
+                let Some(table) = element.as_table_mut() else {
                     eprintln!(
                         "error getting files table from template {}: {}: is not a table is a {}",
                         template_file.to_string_lossy(),
@@ -570,7 +570,22 @@ fn main() -> ExitCode {
                     return ExitCode::FAILURE;
                 };
 
-                if table.get("source").is_none() {
+                if let Some(source) = table.get_mut("source") {
+                    let Some(source_str) = source.as_str() else {
+                        eprintln!(
+                            "error getting files table from template {}: source is not a string: {}",
+                            template_file.to_string_lossy(),
+                            element
+                        );
+
+                        return ExitCode::FAILURE;
+                    };
+
+                    let source_path =
+                        files_dir.join(source_str.strip_prefix("/").unwrap_or(source_str));
+
+                    *source = Value::String(source_path.to_string_lossy().to_string());
+                } else {
                     eprintln!(
                         "error getting files table from template {}: source is missing from: {}",
                         template_file.to_string_lossy(),
@@ -579,7 +594,17 @@ fn main() -> ExitCode {
 
                     return ExitCode::FAILURE;
                 }
-                if table.get("iso_path").is_none() {
+                if let Some(iso_path) = table.get("iso_path") {
+                    if !iso_path.is_str() {
+                        eprintln!(
+                            "error getting files table from template {}: iso_path is not a string: {}",
+                            template_file.to_string_lossy(),
+                            element
+                        );
+
+                        return ExitCode::FAILURE;
+                    }
+                } else {
                     eprintln!(
                         "error getting files table from template {}: iso_path is missing from: {}",
                         template_file.to_string_lossy(),
@@ -588,7 +613,17 @@ fn main() -> ExitCode {
 
                     return ExitCode::FAILURE;
                 }
-                if table.get("install_path").is_none() {
+                if let Some(install_path) = table.get("install_path") {
+                    if !install_path.is_str() {
+                        eprintln!(
+                            "error getting files table from template {}: install_path is not a string: {}",
+                            template_file.to_string_lossy(),
+                            element
+                        );
+
+                        return ExitCode::FAILURE;
+                    }
+                } else {
                     eprintln!(
                         "error getting files table from template {}: install_path is missing from: {}",
                         template_file.to_string_lossy(),
@@ -629,7 +664,7 @@ fn main() -> ExitCode {
                 if let Some(source) = table.get_mut("source") {
                     let Some(source_str) = source.as_str() else {
                         eprintln!(
-                            "error getting files table from template {}: source is not a string: {}",
+                            "error getting files table from config {}: source is not a string: {}",
                             template_file.to_string_lossy(),
                             element
                         );
@@ -643,7 +678,7 @@ fn main() -> ExitCode {
                     *source = Value::String(source_path.to_string_lossy().to_string());
                 } else {
                     eprintln!(
-                        "error getting files table from template {}: source is missing from: {}",
+                        "error getting files table from config {}: source is missing from: {}",
                         template_file.to_string_lossy(),
                         element
                     );
@@ -653,7 +688,7 @@ fn main() -> ExitCode {
                 if let Some(iso_path) = table.get("iso_path") {
                     if !iso_path.is_str() {
                         eprintln!(
-                            "error getting files table from template {}: iso_path is not a string: {}",
+                            "error getting files table from config {}: iso_path is not a string: {}",
                             template_file.to_string_lossy(),
                             element
                         );
@@ -662,17 +697,17 @@ fn main() -> ExitCode {
                     }
                 } else {
                     eprintln!(
-                        "error getting files table from template {}: iso_path is missing from: {}",
+                        "error getting files table from config {}: iso_path is missing from: {}",
                         template_file.to_string_lossy(),
                         element
                     );
 
                     return ExitCode::FAILURE;
                 }
-                if let Some(iso_path) = table.get("install_path") {
-                    if !iso_path.is_str() {
+                if let Some(install_path) = table.get("install_path") {
+                    if !install_path.is_str() {
                         eprintln!(
-                            "error getting files table from template {}: install_path is not a string: {}",
+                            "error getting files table from config {}: install_path is not a string: {}",
                             template_file.to_string_lossy(),
                             element
                         );
@@ -681,7 +716,7 @@ fn main() -> ExitCode {
                     }
                 } else {
                     eprintln!(
-                        "error getting files table from template {}: install_path is missing from: {}",
+                        "error getting files table from config {}: install_path is missing from: {}",
                         template_file.to_string_lossy(),
                         element
                     );
