@@ -329,8 +329,7 @@ fn main() -> ExitCode {
                 return ExitCode::FAILURE;
             };
 
-            let script_path =
-                scripts_dir.join(script_path.strip_prefix("/").unwrap_or(script_path));
+            let script_path = scripts_dir.join(script_path.trim_start_matches('/'));
             match fs::read_to_string(&script_path) {
                 Ok(script_value) => {
                     match template_environment.render_str(&script_value, context!()) {
@@ -401,8 +400,7 @@ fn main() -> ExitCode {
                     return ExitCode::FAILURE;
                 };
 
-                let script_path =
-                    custom_scripts_dir.join(script_path.strip_prefix("/").unwrap_or(script_path));
+                let script_path = custom_scripts_dir.join(script_path.trim_start_matches('/'));
                 match fs::read_to_string(&script_path) {
                     Ok(script_value) => {
                         if !template_missing_config_script {
@@ -490,8 +488,7 @@ fn main() -> ExitCode {
                 return ExitCode::FAILURE;
             };
 
-            let script_path =
-                custom_scripts_dir.join(script_path.strip_prefix("/").unwrap_or(script_path));
+            let script_path = custom_scripts_dir.join(script_path.trim_start_matches('/'));
             match fs::read_to_string(&script_path) {
                 Ok(script_value) => {
                     match custom_environment.render_str(&script_value, context!()) {
@@ -581,8 +578,7 @@ fn main() -> ExitCode {
                         return ExitCode::FAILURE;
                     };
 
-                    let source_path =
-                        files_dir.join(source_str.strip_prefix("/").unwrap_or(source_str));
+                    let source_path = files_dir.join(source_str.trim_start_matches('/'));
 
                     *source = Value::String(source_path.to_string_lossy().to_string());
                 } else {
@@ -632,6 +628,16 @@ fn main() -> ExitCode {
 
                     return ExitCode::FAILURE;
                 }
+                if let Some(early) = table.get("early")
+                    && !early.is_bool() {
+                        eprintln!(
+                            "error getting files table from template {}: early is not a boolean: {}",
+                            template_file.to_string_lossy(),
+                            element
+                        );
+
+                        return ExitCode::FAILURE;
+                    }
             }
 
             array.clone()
@@ -643,7 +649,7 @@ fn main() -> ExitCode {
             let Some(array) = files.as_array_mut() else {
                 eprintln!(
                     "error getting files array from config {}: is not an array",
-                    template_file.to_string_lossy()
+                    config_file.to_string_lossy()
                 );
 
                 return ExitCode::FAILURE;
@@ -653,7 +659,7 @@ fn main() -> ExitCode {
                 let Some(table) = element.as_table_mut() else {
                     eprintln!(
                         "error getting files table from config {}: {}: is not a table is a {}",
-                        template_file.to_string_lossy(),
+                        config_file.to_string_lossy(),
                         element,
                         element.type_str()
                     );
@@ -665,21 +671,20 @@ fn main() -> ExitCode {
                     let Some(source_str) = source.as_str() else {
                         eprintln!(
                             "error getting files table from config {}: source is not a string: {}",
-                            template_file.to_string_lossy(),
+                            config_file.to_string_lossy(),
                             element
                         );
 
                         return ExitCode::FAILURE;
                     };
 
-                    let source_path =
-                        custom_files_dir.join(source_str.strip_prefix("/").unwrap_or(source_str));
+                    let source_path = custom_files_dir.join(source_str.trim_start_matches('/'));
 
                     *source = Value::String(source_path.to_string_lossy().to_string());
                 } else {
                     eprintln!(
                         "error getting files table from config {}: source is missing from: {}",
-                        template_file.to_string_lossy(),
+                        config_file.to_string_lossy(),
                         element
                     );
 
@@ -689,7 +694,7 @@ fn main() -> ExitCode {
                     if !iso_path.is_str() {
                         eprintln!(
                             "error getting files table from config {}: iso_path is not a string: {}",
-                            template_file.to_string_lossy(),
+                            config_file.to_string_lossy(),
                             element
                         );
 
@@ -698,7 +703,7 @@ fn main() -> ExitCode {
                 } else {
                     eprintln!(
                         "error getting files table from config {}: iso_path is missing from: {}",
-                        template_file.to_string_lossy(),
+                        config_file.to_string_lossy(),
                         element
                     );
 
@@ -708,7 +713,7 @@ fn main() -> ExitCode {
                     if !install_path.is_str() {
                         eprintln!(
                             "error getting files table from config {}: install_path is not a string: {}",
-                            template_file.to_string_lossy(),
+                            config_file.to_string_lossy(),
                             element
                         );
 
@@ -717,12 +722,22 @@ fn main() -> ExitCode {
                 } else {
                     eprintln!(
                         "error getting files table from config {}: install_path is missing from: {}",
-                        template_file.to_string_lossy(),
+                        config_file.to_string_lossy(),
                         element
                     );
 
                     return ExitCode::FAILURE;
                 }
+                if let Some(early) = table.get("early")
+                    && !early.is_bool() {
+                        eprintln!(
+                            "error getting files table from config {}: early is not a boolean: {}",
+                            config_file.to_string_lossy(),
+                            element
+                        );
+
+                        return ExitCode::FAILURE;
+                    }
             }
 
             array.clone()
@@ -795,6 +810,8 @@ fn main() -> ExitCode {
         return ExitCode::FAILURE;
     }
 
+    let early_command_key = "d-i preseed/early_command string";
+    let mut early_command_value = String::new();
     let late_command_key = "d-i preseed/late_command string";
     let mut late_command_value = String::from(concat!(
         "cp /cdrom/config.sh /target/bin; ",
@@ -805,15 +822,6 @@ fn main() -> ExitCode {
         "in-target /bin/config.sh; ",
         "in-target systemctl enable install.timer; ",
     ));
-
-    if let Some(value) = preseed_toml.remove(late_command_key) {
-        late_command_value.push_str("\n\n");
-        late_command_value.push_str(
-            value
-                .as_str()
-                .expect("table should have been checked to be only strings"),
-        );
-    }
 
     for file_table in files_toml.iter().chain(custom_files_toml.iter()) {
         let table = file_table
@@ -834,7 +842,7 @@ fn main() -> ExitCode {
             .expect("file table should have checked iso_path existence")
             .as_str()
             .expect("files table should have been checked to be string");
-        let temp_iso_path_dir = temp_dir.join(iso_path.strip_prefix("/").unwrap_or(iso_path));
+        let temp_iso_path_dir = temp_dir.join(iso_path.trim_start_matches('/'));
         let temp_iso_path = temp_iso_path_dir.join(file_name);
         let install_path = table
             .get("install_path")
@@ -860,10 +868,50 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
 
-        late_command_value
-            .push_str(format!("cp /cdrom/{iso_path}/{file_name} /target/{install_path}").as_str());
+        if let Some(early_toml) = table.get("early")
+            && let Some(early) = early_toml.as_bool()
+            && early
+        {
+            early_command_value.push_str(
+                format!(
+                    "cp /cdrom/{}/{} /{}; ",
+                    iso_path.trim_start_matches('/').trim_end_matches('/'),
+                    file_name.trim_start_matches('/'),
+                    install_path.trim_start_matches('/'),
+                )
+                .as_str(),
+            );
+        } else {
+            late_command_value.push_str(
+                format!(
+                    "cp /cdrom/{}/{} /target/{}; ",
+                    iso_path.trim_start_matches('/').trim_end_matches('/'),
+                    file_name.trim_start_matches('/'),
+                    install_path.trim_start_matches('/'),
+                )
+                .as_str(),
+            );
+        }
     }
 
+    if let Some(value) = preseed_toml.remove(early_command_key) {
+        early_command_value.push(' ');
+        early_command_value.push_str(
+            value
+                .as_str()
+                .expect("table should have been checked to be only strings"),
+        );
+    }
+    if let Some(value) = preseed_toml.remove(late_command_key) {
+        late_command_value.push(' ');
+        late_command_value.push_str(
+            value
+                .as_str()
+                .expect("table should have been checked to be only strings"),
+        );
+    }
+
+    preseed_toml.insert(early_command_key.into(), Value::String(early_command_value));
     preseed_toml.insert(late_command_key.into(), Value::String(late_command_value));
 
     for (key, value) in &preseed_toml {
