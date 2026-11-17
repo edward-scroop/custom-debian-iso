@@ -1,0 +1,12 @@
+#!/bin/sh
+set -e
+
+case "$1" in
+configure)
+    if [ -d "/etc/custom-debian-iso" ]; then
+        chmod 777 /etc/custom-debian-iso
+    fi
+    ;;
+esac
+
+#DEBHELPER#

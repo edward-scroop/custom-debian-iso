@@ -1,0 +1,17 @@
+#!/bin/sh
+set -e
+
+DIR_PATH="/etc/custom-debian-iso"
+
+case "$1" in
+purge)
+    # Per https://www.debian.org/doc/debian-policy/ch-files.html#behavior
+    # "configuration files must be preserved when the package is removed, and
+    #  only deleted when the package is purged."
+    if [ -e "${DIR_PATH}" ]; then
+        rm -rf "${DIR_PATH}"
+    fi
+    ;;
+esac
+
+#DEBHELPER#

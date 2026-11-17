@@ -1,0 +1,14 @@
+template = "base-debian-13.toml"
+
+files = [
+    { source = "example.txt", iso_path = "/", install_path = "/tmp" }
+]
+
+[config]
+script-file = "config.sh"
+
+[install]
+script-file = "install.sh"
+
+[preseed]
+# Override template preseed settings here.

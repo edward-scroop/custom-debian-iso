@@ -8,6 +8,17 @@ publish = false
 edition = "2024"
 rust-version = "1.94.1"
 
+[package.metadata.deb]
+revision = "1"
+maintainer = "Edward Scroop <edward.scroop@gmail.com>"
+copyright = "2026 Edward Scroop <edward.scroop@gmail.com>"
+profile = "release"
+assets = [
+    ["target/release/create-custom-iso", "/usr/bin/create-custom-iso", "755"],
+    ["pkg/common/custom-debian-iso/**/*", "/etc/custom-debian-iso/", "644"],
+]
+maintainer-scripts = "pkg/debian/"
+
 [[bin]]
 name = "create-custom-iso"
 path = "src/main.rs"
