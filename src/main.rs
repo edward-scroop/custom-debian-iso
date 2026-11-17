@@ -300,6 +300,7 @@ fn main() -> ExitCode {
             == "shared"
         {
             path.remove(0);
+        } else {
             added_path.push(&custom_iso_name);
         }
         added_path.push("scripts");
@@ -629,15 +630,16 @@ fn main() -> ExitCode {
                     return ExitCode::FAILURE;
                 }
                 if let Some(early) = table.get("early")
-                    && !early.is_bool() {
-                        eprintln!(
-                            "error getting files table from template {}: early is not a boolean: {}",
-                            template_file.to_string_lossy(),
-                            element
-                        );
+                    && !early.is_bool()
+                {
+                    eprintln!(
+                        "error getting files table from template {}: early is not a boolean: {}",
+                        template_file.to_string_lossy(),
+                        element
+                    );
 
-                        return ExitCode::FAILURE;
-                    }
+                    return ExitCode::FAILURE;
+                }
             }
 
             array.clone()
@@ -729,15 +731,16 @@ fn main() -> ExitCode {
                     return ExitCode::FAILURE;
                 }
                 if let Some(early) = table.get("early")
-                    && !early.is_bool() {
-                        eprintln!(
-                            "error getting files table from config {}: early is not a boolean: {}",
-                            config_file.to_string_lossy(),
-                            element
-                        );
+                    && !early.is_bool()
+                {
+                    eprintln!(
+                        "error getting files table from config {}: early is not a boolean: {}",
+                        config_file.to_string_lossy(),
+                        element
+                    );
 
-                        return ExitCode::FAILURE;
-                    }
+                    return ExitCode::FAILURE;
+                }
             }
 
             array.clone()
