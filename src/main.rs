@@ -1,41 +1,23 @@
 // SPDX-FileCopyrightText: Copyright 2026 Edward Scroop <edward.scroop@gmail.com>
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+mod config;
 mod fs;
 mod iso;
 
 use crate::{
+    config::{
+        get_config_script_from_toml, get_custom_minijinja_environment,
+        get_install_script_from_toml, get_preseed_from_toml, get_template_minijinja_environment,
+        load_toml, process_files_preseed, process_files_toml, toml_get_string,
+        write_string_to_file,
+    },
     fs::{check_if_dir_exists, check_if_file_exists, delete_dir, prepare_temp_and_output_dir},
     iso::{create_iso, enable_bios_booting, enable_uefi_booting, extract_iso},
 };
 use clap::Parser;
-use minijinja::context;
-use std::{
-    fs::{File, copy, create_dir_all, read_to_string},
-    io::Write,
-    os::unix::fs::OpenOptionsExt,
-    path::PathBuf,
-    process::ExitCode,
-};
-use toml::{Table, Value, value::Array};
-
-fn toml_get_string(key_name: &str, toml_table: &mut Table) -> Result<String, String> {
-    if let Some(toml) = toml_table.remove(key_name) {
-        if toml.is_str() {
-            match toml {
-                Value::String(string) => Ok(string),
-                _ => unreachable!("toml is checked to be string already"),
-            }
-        } else {
-            Err(format!(
-                "{key_name} is not a toml string, is: {} instead",
-                toml.type_str()
-            ))
-        }
-    } else {
-        Err(format!("key: {key_name} missing from table"))
-    }
-}
+use std::{path::PathBuf, process::ExitCode};
+use toml::Value;
 
 fn main() -> ExitCode {
     /// A program to create custom debian isos.
@@ -60,6 +42,7 @@ fn main() -> ExitCode {
             Ok(cwd) => cwd,
             Err(e) => {
                 eprintln!("Error getting current working directory: {e}");
+
                 return ExitCode::FAILURE;
             }
         }
@@ -94,30 +77,23 @@ fn main() -> ExitCode {
     ] {
         if let Err(e) = check_if_dir_exists(dir) {
             eprintln!("{e}");
+
             return ExitCode::FAILURE;
         }
     }
 
     if let Err(e) = prepare_temp_and_output_dir(&temp_dir, &output_dir) {
         eprintln!("{e}");
+
         return ExitCode::FAILURE;
     }
 
     let config_file = custom_dir.join("config.toml");
-    let config_string = match read_to_string(&config_file) {
-        Ok(x) => x,
-        Err(e) => {
-            eprintln!(
-                "error getting config: {e} {}",
-                config_file.to_string_lossy()
-            );
-            return ExitCode::FAILURE;
-        }
-    };
-    let mut config_toml: Table = match toml::from_str(&config_string) {
+    let mut config_toml = match load_toml(&config_file) {
         Ok(x) => x,
         Err(e) => {
             eprintln!("error getting config: {e}");
+
             return ExitCode::FAILURE;
         }
     };
@@ -126,580 +102,113 @@ fn main() -> ExitCode {
         Ok(x) => x,
         Err(e) => {
             eprintln!("error getting template: {e}");
+
             return ExitCode::FAILURE;
         }
     };
     let template_file = templates_dir.join(&template_path);
-    let template_string = match read_to_string(&template_file) {
-        Ok(x) => x,
-        Err(e) => {
-            eprintln!(
-                "error getting template: {e} {}",
-                template_file.to_string_lossy()
-            );
-            return ExitCode::FAILURE;
-        }
-    };
-    let mut template_toml: Table = match toml::from_str(&template_string) {
+    let mut template_toml = match load_toml(&template_file) {
         Ok(x) => x,
         Err(e) => {
             eprintln!("error getting template: {e}");
+
             return ExitCode::FAILURE;
         }
     };
 
-    let mut preseed_toml: Table = match template_toml.get("preseed") {
-        Some(x) => {
-            if let Some(table) = x.as_table() {
-                for (key, value) in table {
-                    if !value.is_str() {
-                        eprintln!(
-                            "error template preseed value {key} in {}: is not a string",
-                            template_file.to_string_lossy()
-                        );
-                        return ExitCode::FAILURE;
-                    }
-                }
+    let mut preseed_toml = match get_preseed_from_toml(
+        template_toml.get("preseed"),
+        config_toml.get("preseed"),
+        &template_file,
+        &config_file,
+    ) {
+        Ok(x) => x,
+        Err(e) => {
+            eprintln!("{e}",);
 
-                table.clone()
-            } else {
-                eprintln!(
-                    "error getting preseed values from template {}: is not a table",
-                    template_file.to_string_lossy()
-                );
-                return ExitCode::FAILURE;
-            }
-        }
-        None => Table::new(),
-    };
-    if let Some(x) = config_toml.get("preseed") {
-        if let Some(table) = x.as_table().cloned() {
-            for (key, value) in &table {
-                if !value.is_str() {
-                    eprintln!(
-                        "error config preseed value {key} in {}: is not a string",
-                        config_file.to_string_lossy()
-                    );
-                    return ExitCode::FAILURE;
-                }
-            }
-
-            preseed_toml.extend(table);
-        } else {
-            eprintln!(
-                "error getting preseed values from config {}: is not a table",
-                config_file.to_string_lossy()
-            );
             return ExitCode::FAILURE;
         }
-    }
-
-    let mut template_environment = minijinja::Environment::new();
-    template_environment.set_auto_reload(false);
-    template_environment.set_loader(minijinja::path_loader(&scripts_dir));
-
-    let mut custom_environment = minijinja::Environment::new();
-    custom_environment.set_auto_reload(false);
-    custom_environment.set_loader(minijinja::path_loader(&work_dir));
-    custom_environment.set_path_join_callback(move |name, _parent| {
-        let mut path = name.split('/').collect::<Vec<&str>>();
-        let mut added_path: Vec<&str> = Vec::new();
-
-        if *path
-            .first()
-            .expect("vec should contain atleast one element")
-            == "shared"
-        {
-            path.remove(0);
-        } else {
-            added_path.push(&custom_iso_name);
-        }
-        added_path.push("scripts");
-
-        for new_path in added_path.iter().rev() {
-            path.insert(0, *new_path);
-        }
-        path.join("/").into()
-    });
-
-    let mut template_missing_config_script = false;
-    let mut config_script = if let Some(config) = template_toml.get("config") {
-        let Some(table) = config.as_table() else {
-            eprintln!(
-                "error getting config script values from template {}: is not a table",
-                template_file.to_string_lossy()
-            );
-            return ExitCode::FAILURE;
-        };
-
-        if let Some(script) = table.get("script-file") {
-            let Some(script_path) = script.as_str() else {
-                eprintln!(
-                    "error getting config script file from template {}: script-file is not a string",
-                    template_file.to_string_lossy()
-                );
-                return ExitCode::FAILURE;
-            };
-
-            let script_path = scripts_dir.join(script_path.trim_start_matches('/'));
-            match read_to_string(&script_path) {
-                Ok(script_value) => {
-                    match template_environment.render_str(&script_value, context!()) {
-                        Ok(x) => x,
-                        Err(e) => {
-                            eprintln!(
-                                "error parsing config script jinja from template: {e} {}",
-                                script_path.to_string_lossy()
-                            );
-
-                            return ExitCode::FAILURE;
-                        }
-                    }
-                }
-                Err(e) => {
-                    eprintln!(
-                        "error loading config script: {e} {}",
-                        script_path.to_string_lossy()
-                    );
-                    return ExitCode::FAILURE;
-                }
-            }
-        } else if let Some(script) = table.get("script") {
-            let Some(script_value) = script.as_str() else {
-                eprintln!(
-                    "error getting config script from template {}: script is not a string",
-                    template_file.to_string_lossy()
-                );
-                return ExitCode::FAILURE;
-            };
-
-            match template_environment.render_str(script_value, context!()) {
-                Ok(x) => x,
-                Err(e) => {
-                    eprintln!(
-                        "error parsing config script jinja from template: {e} {}",
-                        template_file.to_string_lossy()
-                    );
-
-                    return ExitCode::FAILURE;
-                }
-            }
-        } else {
-            template_missing_config_script = true;
-            String::new()
-        }
-    } else {
-        template_missing_config_script = true;
-        String::new()
     };
 
-    match config_toml.get("config") {
-        Some(config) => {
-            let Some(table) = config.as_table() else {
-                eprintln!(
-                    "error getting config script values from config {}: is not a table",
-                    config_file.to_string_lossy()
-                );
-                return ExitCode::FAILURE;
-            };
+    let template_environment = get_template_minijinja_environment(&work_dir);
+    let custom_environment = get_custom_minijinja_environment(&work_dir, custom_iso_name);
 
-            if let Some(script) = table.get("script-file") {
-                let Some(script_path) = script.as_str() else {
-                    eprintln!(
-                        "error getting config script file from config {}: script-file is not a string",
-                        config_file.to_string_lossy()
-                    );
-                    return ExitCode::FAILURE;
-                };
+    let config_script = match get_config_script_from_toml(
+        template_toml.get("config"),
+        config_toml.get("config"),
+        &scripts_dir,
+        &template_environment,
+        &custom_environment,
+    ) {
+        Ok(x) => x,
+        Err(e) => {
+            eprintln!("error getting config script values: {e}",);
 
-                let script_path = custom_scripts_dir.join(script_path.trim_start_matches('/'));
-                match read_to_string(&script_path) {
-                    Ok(script_value) => {
-                        if !template_missing_config_script {
-                            config_script.push_str("\n\n");
-                        }
-
-                        match custom_environment.render_str(&script_value, context!()) {
-                            Ok(x) => config_script.push_str(&x),
-                            Err(e) => {
-                                eprintln!(
-                                    "error parsing config script jinja from config: {e} {}",
-                                    script_path.to_string_lossy()
-                                );
-
-                                return ExitCode::FAILURE;
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        eprintln!(
-                            "error loading config script: {e} {}",
-                            script_path.to_string_lossy()
-                        );
-                        return ExitCode::FAILURE;
-                    }
-                }
-            } else if let Some(script) = table.get("script") {
-                let Some(script_value) = script.as_str() else {
-                    eprintln!(
-                        "error getting config script from config {}: script is not a string",
-                        config_file.to_string_lossy()
-                    );
-                    return ExitCode::FAILURE;
-                };
-
-                if !template_missing_config_script {
-                    config_script.push_str("\n\n");
-                }
-
-                match custom_environment.render_str(script_value, context!()) {
-                    Ok(x) => config_script.push_str(&x),
-                    Err(e) => {
-                        eprintln!(
-                            "error parsing config script jinja from config: {e} {}",
-                            config_file.to_string_lossy()
-                        );
-
-                        return ExitCode::FAILURE;
-                    }
-                }
-            } else if template_missing_config_script {
-                eprintln!(
-                    "error missing config script values from config and template. Set config script values in atleast one"
-                );
-                return ExitCode::FAILURE;
-            }
+            return ExitCode::FAILURE;
         }
-        None => {
-            if template_missing_config_script {
-                eprintln!(
-                    "error missing config script values from config and template. Set config script values in atleast one"
-                );
-                return ExitCode::FAILURE;
-            }
-        }
-    }
+    };
 
-    let install_script = if let Some(install) = config_toml.get("install") {
-        let Some(table) = install.as_table() else {
+    let install_script = match get_install_script_from_toml(
+        config_toml.get("install"),
+        &scripts_dir,
+        &custom_environment,
+    ) {
+        Ok(x) => x,
+        Err(e) => {
+            eprintln!("error getting install script values: {e}",);
+
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let files_toml = match process_files_toml(template_toml.get_mut("files"), &files_dir) {
+        Ok(x) => x,
+        Err(e) => {
             eprintln!(
-                "error getting install script values from config {}: is not a table",
-                config_file.to_string_lossy()
+                "error getting files from template: {}: {e}",
+                template_file.to_string_lossy().to_string()
             );
 
             return ExitCode::FAILURE;
-        };
-
-        if let Some(script) = table.get("script-file") {
-            let Some(script_path) = script.as_str() else {
-                eprintln!(
-                    "error getting install script file from config {}: script-file is not a string",
-                    config_file.to_string_lossy()
-                );
-
-                return ExitCode::FAILURE;
-            };
-
-            let script_path = custom_scripts_dir.join(script_path.trim_start_matches('/'));
-            match read_to_string(&script_path) {
-                Ok(script_value) => {
-                    match custom_environment.render_str(&script_value, context!()) {
-                        Ok(x) => x,
-                        Err(e) => {
-                            eprintln!(
-                                "error parsing install script jinja from config: {e} {}",
-                                config_file.to_string_lossy()
-                            );
-
-                            return ExitCode::FAILURE;
-                        }
-                    }
-                }
-                Err(e) => {
-                    eprintln!(
-                        "error loading install script: {e} {}",
-                        script_path.to_string_lossy()
-                    );
-
-                    return ExitCode::FAILURE;
-                }
-            }
-        } else if let Some(script) = table.get("script") {
-            let Some(script_value) = script.as_str() else {
-                eprintln!(
-                    "error getting install script from config {}: script is not a string",
-                    config_file.to_string_lossy()
-                );
-
-                return ExitCode::FAILURE;
-            };
-
-            match custom_environment.render_str(script_value, context!()) {
-                Ok(x) => x,
-                Err(e) => {
-                    eprintln!(
-                        "error parsing install script jinja from config: {e} {}",
-                        config_file.to_string_lossy()
-                    );
-
-                    return ExitCode::FAILURE;
-                }
-            }
-        } else {
-            eprintln!("error missing install script-file or script values from config");
+        }
+    };
+    let custom_files_toml = match process_files_toml(config_toml.get_mut("files"), &files_dir) {
+        Ok(x) => x,
+        Err(e) => {
+            eprintln!(
+                "error getting files from config: {}: {e}",
+                config_file.to_string_lossy().to_string()
+            );
 
             return ExitCode::FAILURE;
         }
-    } else {
-        eprintln!("error missing install script values from config");
-
-        return ExitCode::FAILURE;
-    };
-
-    let files_toml: Array = match template_toml.get_mut("files") {
-        Some(files) => {
-            let Some(array) = files.as_array_mut() else {
-                eprintln!(
-                    "error getting files array from template {}: is not an array",
-                    template_file.to_string_lossy()
-                );
-
-                return ExitCode::FAILURE;
-            };
-
-            for element in array.iter_mut() {
-                let Some(table) = element.as_table_mut() else {
-                    eprintln!(
-                        "error getting files table from template {}: {}: is not a table is a {}",
-                        template_file.to_string_lossy(),
-                        element,
-                        element.type_str()
-                    );
-
-                    return ExitCode::FAILURE;
-                };
-
-                if let Some(source) = table.get_mut("source") {
-                    let Some(source_str) = source.as_str() else {
-                        eprintln!(
-                            "error getting files table from template {}: source is not a string: {}",
-                            template_file.to_string_lossy(),
-                            element
-                        );
-
-                        return ExitCode::FAILURE;
-                    };
-
-                    let source_path = files_dir.join(source_str.trim_start_matches('/'));
-
-                    *source = Value::String(source_path.to_string_lossy().to_string());
-                } else {
-                    eprintln!(
-                        "error getting files table from template {}: source is missing from: {}",
-                        template_file.to_string_lossy(),
-                        element
-                    );
-
-                    return ExitCode::FAILURE;
-                }
-                if let Some(iso_path) = table.get("iso_path") {
-                    if !iso_path.is_str() {
-                        eprintln!(
-                            "error getting files table from template {}: iso_path is not a string: {}",
-                            template_file.to_string_lossy(),
-                            element
-                        );
-
-                        return ExitCode::FAILURE;
-                    }
-                } else {
-                    eprintln!(
-                        "error getting files table from template {}: iso_path is missing from: {}",
-                        template_file.to_string_lossy(),
-                        element
-                    );
-
-                    return ExitCode::FAILURE;
-                }
-                if let Some(install_path) = table.get("install_path") {
-                    if !install_path.is_str() {
-                        eprintln!(
-                            "error getting files table from template {}: install_path is not a string: {}",
-                            template_file.to_string_lossy(),
-                            element
-                        );
-
-                        return ExitCode::FAILURE;
-                    }
-                } else {
-                    eprintln!(
-                        "error getting files table from template {}: install_path is missing from: {}",
-                        template_file.to_string_lossy(),
-                        element
-                    );
-
-                    return ExitCode::FAILURE;
-                }
-                if let Some(early) = table.get("early")
-                    && !early.is_bool()
-                {
-                    eprintln!(
-                        "error getting files table from template {}: early is not a boolean: {}",
-                        template_file.to_string_lossy(),
-                        element
-                    );
-
-                    return ExitCode::FAILURE;
-                }
-            }
-
-            array.clone()
-        }
-        None => Array::new(),
-    };
-    let custom_files_toml: Array = match config_toml.get_mut("files") {
-        Some(files) => {
-            let Some(array) = files.as_array_mut() else {
-                eprintln!(
-                    "error getting files array from config {}: is not an array",
-                    config_file.to_string_lossy()
-                );
-
-                return ExitCode::FAILURE;
-            };
-
-            for element in array.iter_mut() {
-                let Some(table) = element.as_table_mut() else {
-                    eprintln!(
-                        "error getting files table from config {}: {}: is not a table is a {}",
-                        config_file.to_string_lossy(),
-                        element,
-                        element.type_str()
-                    );
-
-                    return ExitCode::FAILURE;
-                };
-
-                if let Some(source) = table.get_mut("source") {
-                    let Some(source_str) = source.as_str() else {
-                        eprintln!(
-                            "error getting files table from config {}: source is not a string: {}",
-                            config_file.to_string_lossy(),
-                            element
-                        );
-
-                        return ExitCode::FAILURE;
-                    };
-
-                    let source_path = custom_files_dir.join(source_str.trim_start_matches('/'));
-
-                    *source = Value::String(source_path.to_string_lossy().to_string());
-                } else {
-                    eprintln!(
-                        "error getting files table from config {}: source is missing from: {}",
-                        config_file.to_string_lossy(),
-                        element
-                    );
-
-                    return ExitCode::FAILURE;
-                }
-                if let Some(iso_path) = table.get("iso_path") {
-                    if !iso_path.is_str() {
-                        eprintln!(
-                            "error getting files table from config {}: iso_path is not a string: {}",
-                            config_file.to_string_lossy(),
-                            element
-                        );
-
-                        return ExitCode::FAILURE;
-                    }
-                } else {
-                    eprintln!(
-                        "error getting files table from config {}: iso_path is missing from: {}",
-                        config_file.to_string_lossy(),
-                        element
-                    );
-
-                    return ExitCode::FAILURE;
-                }
-                if let Some(install_path) = table.get("install_path") {
-                    if !install_path.is_str() {
-                        eprintln!(
-                            "error getting files table from config {}: install_path is not a string: {}",
-                            config_file.to_string_lossy(),
-                            element
-                        );
-
-                        return ExitCode::FAILURE;
-                    }
-                } else {
-                    eprintln!(
-                        "error getting files table from config {}: install_path is missing from: {}",
-                        config_file.to_string_lossy(),
-                        element
-                    );
-
-                    return ExitCode::FAILURE;
-                }
-                if let Some(early) = table.get("early")
-                    && !early.is_bool()
-                {
-                    eprintln!(
-                        "error getting files table from config {}: early is not a boolean: {}",
-                        config_file.to_string_lossy(),
-                        element
-                    );
-
-                    return ExitCode::FAILURE;
-                }
-            }
-
-            array.clone()
-        }
-        None => Array::new(),
     };
 
     let iso_path = match toml_get_string("iso", &mut template_toml) {
         Ok(x) => x,
         Err(e) => {
             eprintln!("error getting iso path: {e}");
+
             return ExitCode::FAILURE;
         }
     };
     let iso_file = isos_dir.join(iso_path);
+
     if let Err(e) = check_if_file_exists(&iso_file) {
         eprintln!("error checking for iso file: {e}");
+
         return ExitCode::FAILURE;
     }
 
     if let Err(e) = extract_iso(&iso_file, &temp_dir) {
         eprintln!("error extracting iso: {e}");
-        return ExitCode::FAILURE;
-    }
 
-    let preseed_file_path = temp_dir.join("preseed.cfg");
-    let mut preseed_file = match File::create_new(&preseed_file_path) {
-        Ok(x) => x,
-        Err(e) => {
-            eprintln!(
-                "error creating preseed file: {e} {}",
-                preseed_file_path.to_string_lossy()
-            );
-            return ExitCode::FAILURE;
-        }
-    };
-
-    if let Err(e) = writeln!(preseed_file, "#_preseed_V1") {
-        eprintln!(
-            "error writing to preseed file: {e} {}",
-            preseed_file_path.to_string_lossy()
-        );
         return ExitCode::FAILURE;
     }
 
     let early_command_key = "d-i preseed/early_command string";
-    let mut early_command_value = String::new();
     let late_command_key = "d-i preseed/late_command string";
+    let mut early_command_value = String::new();
     let mut late_command_value = String::from(concat!(
         "cp /cdrom/config.sh /target/bin; ",
         "cp /cdrom/install.sh /target/bin; ",
@@ -710,75 +219,15 @@ fn main() -> ExitCode {
         "in-target systemctl enable install.timer; ",
     ));
 
-    for file_table in files_toml.iter().chain(custom_files_toml.iter()) {
-        let table = file_table
-            .as_table()
-            .expect("files array should be comprised of tables");
+    if let Err(e) = process_files_preseed(
+        files_toml.iter().chain(custom_files_toml.iter()),
+        &mut early_command_value,
+        &mut late_command_value,
+        &temp_dir,
+    ) {
+        eprintln!("{e}");
 
-        let source = table
-            .get("source")
-            .expect("file table should have checked source existence")
-            .as_str()
-            .expect("files table should have been checked to be string");
-        let file_name = source
-            .split('/')
-            .next_back()
-            .expect("splitting a string will always return an iterator with content");
-        let iso_path = table
-            .get("iso_path")
-            .expect("file table should have checked iso_path existence")
-            .as_str()
-            .expect("files table should have been checked to be string");
-        let temp_iso_path_dir = temp_dir.join(iso_path.trim_start_matches('/'));
-        let temp_iso_path = temp_iso_path_dir.join(file_name);
-        let install_path = table
-            .get("install_path")
-            .expect("file table should have checked install_path existence")
-            .as_str()
-            .expect("files table should have been checked to be string");
-
-        if let Err(e) = create_dir_all(&temp_iso_path_dir) {
-            eprintln!(
-                "error creating directories on iso temp: {source} to: {} {e}",
-                temp_iso_path_dir.to_string_lossy()
-            );
-
-            return ExitCode::FAILURE;
-        }
-
-        if let Err(e) = copy(source, &temp_iso_path) {
-            eprintln!(
-                "error copying file: {source} to: {} {e}",
-                temp_iso_path.to_string_lossy()
-            );
-
-            return ExitCode::FAILURE;
-        }
-
-        if let Some(early_toml) = table.get("early")
-            && let Some(early) = early_toml.as_bool()
-            && early
-        {
-            early_command_value.push_str(
-                format!(
-                    "cp /cdrom/{}/{} /{}; ",
-                    iso_path.trim_start_matches('/').trim_end_matches('/'),
-                    file_name.trim_start_matches('/'),
-                    install_path.trim_start_matches('/'),
-                )
-                .as_str(),
-            );
-        } else {
-            late_command_value.push_str(
-                format!(
-                    "cp /cdrom/{}/{} /target/{}; ",
-                    iso_path.trim_start_matches('/').trim_end_matches('/'),
-                    file_name.trim_start_matches('/'),
-                    install_path.trim_start_matches('/'),
-                )
-                .as_str(),
-            );
-        }
+        return ExitCode::FAILURE;
     }
 
     if let Some(value) = preseed_toml.remove(early_command_key) {
@@ -801,44 +250,30 @@ fn main() -> ExitCode {
     preseed_toml.insert(early_command_key.into(), Value::String(early_command_value));
     preseed_toml.insert(late_command_key.into(), Value::String(late_command_value));
 
-    for (key, value) in &preseed_toml {
-        if let Err(e) = writeln!(
-            preseed_file,
-            "{key} {}",
+    let mut preseed_string = String::from("#_preseed_V1\n");
+    for (key, value) in preseed_toml {
+        preseed_string.push_str(&format!(
+            "{key} {}\n",
             value
                 .as_str()
                 .expect("table should have been checked to be only strings")
-        ) {
-            eprintln!(
-                "error writing to preseed file: {e} {}",
-                preseed_file_path.to_string_lossy()
-            );
+        ));
+    }
 
-            return ExitCode::FAILURE;
-        }
+    let preseed_file_path = temp_dir.join("preseed.cfg");
+    if let Err(e) = write_string_to_file(&preseed_file_path, &preseed_string, false) {
+        eprintln!(
+            "error writing preseed file to {}: {e}",
+            preseed_file_path.to_string_lossy()
+        );
+
+        return ExitCode::FAILURE;
     }
 
     let config_script_path = temp_dir.join("config.sh");
-    let mut config_script_file = match File::options()
-        .read(true)
-        .write(true)
-        .create_new(true)
-        .mode(0o755)
-        .open(&config_script_path)
-    {
-        Ok(x) => x,
-        Err(e) => {
-            eprintln!(
-                "error creating config script: {e} {}",
-                config_script_path.to_string_lossy()
-            );
-
-            return ExitCode::FAILURE;
-        }
-    };
-    if let Err(e) = writeln!(config_script_file, "{config_script}") {
+    if let Err(e) = write_string_to_file(&config_script_path, &config_script, true) {
         eprintln!(
-            "error writing to config script: {e} {}",
+            "error writing config script to {}: {e}",
             config_script_path.to_string_lossy()
         );
 
@@ -846,26 +281,9 @@ fn main() -> ExitCode {
     }
 
     let install_script_path = temp_dir.join("install.sh");
-    let mut install_script_file = match File::options()
-        .read(true)
-        .write(true)
-        .create_new(true)
-        .mode(0o755)
-        .open(&install_script_path)
-    {
-        Ok(x) => x,
-        Err(e) => {
-            eprintln!(
-                "error creating install script: {e} {}",
-                install_script_path.to_string_lossy()
-            );
-
-            return ExitCode::FAILURE;
-        }
-    };
-    if let Err(e) = writeln!(install_script_file, "{install_script}") {
+    if let Err(e) = write_string_to_file(&install_script_path, &install_script, true) {
         eprintln!(
-            "error writing to install script: {e} {}",
+            "error writing install script to {}: {e}",
             install_script_path.to_string_lossy()
         );
 
@@ -891,20 +309,9 @@ fn main() -> ExitCode {
         "WantedBy=multi-user.target\n",
     );
     let install_service_path = temp_dir.join("install.service");
-    let mut install_service_file = match File::create_new(&install_service_path) {
-        Ok(x) => x,
-        Err(e) => {
-            eprintln!(
-                "error creating install service file: {e} {}",
-                install_service_path.to_string_lossy()
-            );
-
-            return ExitCode::FAILURE;
-        }
-    };
-    if let Err(e) = write!(install_service_file, "{install_service_literal}") {
+    if let Err(e) = write_string_to_file(&install_service_path, &install_service_literal, false) {
         eprintln!(
-            "error writing to install service file: {e} {}",
+            "error writing install service file to {}: {e}",
             install_service_path.to_string_lossy()
         );
 
@@ -923,36 +330,30 @@ fn main() -> ExitCode {
         "WantedBy=multi-user.target\n",
     );
     let install_timer_path = temp_dir.join("install.timer");
-    let mut install_timer_file = match File::create_new(&install_timer_path) {
-        Ok(x) => x,
-        Err(e) => {
-            eprintln!(
-                "error creating install timer file: {e} {}",
-                install_timer_path.to_string_lossy()
-            );
-            return ExitCode::FAILURE;
-        }
-    };
-    if let Err(e) = write!(install_timer_file, "{install_timer_literal}") {
+    if let Err(e) = write_string_to_file(&install_timer_path, &install_timer_literal, false) {
         eprintln!(
-            "error writing to install timer file: {e} {}",
+            "error writing install timer file to {}: {e}",
             install_timer_path.to_string_lossy()
         );
+
         return ExitCode::FAILURE;
     }
 
     if let Err(e) = enable_bios_booting(&temp_dir) {
         eprintln!("error enabling bios booting: {e}");
+
         return ExitCode::FAILURE;
     }
 
     if let Err(e) = enable_uefi_booting(&temp_dir) {
         eprintln!("error enabling uefi booting: {e}");
+
         return ExitCode::FAILURE;
     }
 
     if let Err(e) = create_iso(&iso_file, &temp_dir) {
         eprintln!("error creating iso: {e}");
+
         return ExitCode::FAILURE;
     }
 

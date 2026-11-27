@@ -110,14 +110,17 @@ echo "script"
 """
 ```
 
-Both configs can take an array of tables named `files`, with the keys `source`, `iso_path`, and `install_path`.  
+Both configs can take an array of tables named `files`, with the keys `source`, `iso_path`, `install_path` and `early`.  
 Key pair overwriting will not occur.
+`Early` is an optional boolean that will copy the files from the iso before any script is run. This will operate in the 
+debian installer environment before the target mount is available.
 
 Example:
 
 ```toml
 files = [
-    { source = "example.txt", iso_path = "/", install_path = "/path" }
+    { source = "example.txt", iso_path = "/", install_path = "/path" },
+    { source = "early.txt", iso_path = "/", install_path = "/target", early = true },
 ]
 ```
 
